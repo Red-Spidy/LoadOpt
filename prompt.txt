@@ -1,0 +1,438 @@
+
+#  **MASTER SYSTEM SPECIFICATION FOR A 3D LOAD PLANNING APPLICATION**
+
+**(Complete Prompt for AI Models — Contains ALL Requirements)**
+
+You are an expert software architect. Build a full application based on the following complete specification.
+
+---
+
+# 1. **Application Overview**
+
+Build a **web-based 3D load-planning application** that:
+
+* Accepts SKU (product) data: dimensions, weight, stacking rules, quantities, allowed rotations.
+* Accepts truck/container/warehouse data: internal dimensions, door dimensions, max weight, axle limits.
+* Calculates optimized loading plans using heuristics + metaheuristics.
+* Produces 3D visualizations of placements.
+* Provides instant preview + improved optimization mode.
+* Supports manual editing, reports, PDF/CSV exports, user accounts, and saved projects.
+
+Output of the system = **A complete, validated, optimized 3D arrangement** of items inside a container.
+
+---
+
+# 2. **Core Features**
+
+1. SKU input & management
+2. Truck/space input & management
+3. Instant heuristic-based placement
+4. Advanced optimization (GA, SA, hybrid)
+5. 3D visualization using WebGL/Three.js
+6. Manual editing of placements
+7. Weight balancing & axle load calculation
+8. Stacking rule validation
+9. Door-entry feasibility check
+10. Export reports (PDF, CSV, GLTF)
+11. User authentication & projects
+12. API integration endpoints
+13. Optimization job queue + status tracking
+
+---
+
+# 3. **System Architecture**
+
+Use a **modular architecture**:
+
+### **Frontend**
+
+* React + TypeScript
+* Three.js / React Three Fiber for 3D rendering
+* State management: Zustand/Recoil
+* Responsive web UI
+
+### **Backend**
+
+* Python FastAPI
+* Task Queue: Celery + Redis
+* Database: PostgreSQL
+* Storage: S3-compatible (optional)
+* Workers: GA solver + heuristic solver
+
+### **Solver Engine**
+
+* Layer 1: Fast heuristic (corner placement + FFD)
+* Layer 2: Local optimization (gap filling, swaps)
+* Layer 3: Metaheuristic optimizer (Genetic Algorithm or Simulated Annealing)
+* Layer 4: Optional ILP for small cases (OR-Tools)
+
+---
+
+# 4. **Data Models (Essential)**
+
+### **SKU Model**
+
+```
+SKU {
+  id: string
+  name: string
+  length: number
+  width: number
+  height: number
+  weight: number
+  quantity: number
+  allowed_rotations: boolean[6]
+  fragile: boolean
+  max_stack: number
+  stacking_group: string
+  priority: number
+}
+```
+
+---
+
+### **Truck / Container Model**
+
+```
+Container {
+  id: string
+  name: string
+  inner_length: number
+  inner_width: number
+  inner_height: number
+  door_width: number
+  door_height: number
+  max_weight: number
+  axle_limits: {
+    front: number,
+    rear: number
+  }
+  obstacles: [
+    { x, y, z, length, width, height }
+  ]
+}
+```
+
+---
+
+### **Placement Model**
+
+```
+Placement {
+  sku_id: string
+  instance_index: number
+  x: number
+  y: number
+  z: number
+  rotation: number   // 0–5 (six orientations)
+  width: number
+  height: number
+  length: number
+}
+```
+
+---
+
+### **Plan Model**
+
+```
+Plan {
+  id: string
+  container_id: string
+  placements: Placement[]
+  utilization_pct: number
+  weight_distribution: {
+    front_axle: number,
+    rear_axle: number,
+    center_of_gravity: { x, y, z }
+  }
+  solver_mode: "FAST" | "IMPROVED" | "OPTIMAL"
+  status: "PENDING" | "RUNNING" | "DONE" | "FAILED"
+}
+```
+
+---
+
+# 5. **Algorithms Specification**
+
+## **Heuristic Algorithm (FAST Preview Mode)**
+
+1. Sort SKUs by volume descending.
+2. Generate placement points (corners).
+3. For each SKU instance:
+
+   * Try all allowed rotations.
+   * Check fit in container.
+   * Check stacking rules + fragility.
+   * Place in best-fit corner.
+4. Update placement points.
+
+Complexity must allow near-instant response (<1s for 200 items).
+
+---
+
+## **Optimization Algorithm (IMPROVED Mode)**
+
+### **Genetic Algorithm**
+
+Population structure:
+
+```
+Individual = ordering of SKU instances
+Fitness = combination of:
+  - utilization efficiency
+  - weight balance penalty
+  - stacking violations penalty
+  - door-entry violations penalty
+```
+
+Operators:
+
+* Crossover: ordered crossover
+* Mutation: swap indices
+* Elitism: preserve top 5%
+
+Termination:
+
+* N generations or no improvement.
+
+---
+
+## **Simulated Annealing**
+
+Neighborhood moves:
+
+* Swap two SKUs
+* Rotate an SKU
+* Move SKU to different corner
+
+Cooling schedule: exponential.
+
+---
+
+## **Validation Layer**
+
+Must check:
+
+* Item inside container
+* Item fits through door
+* No collisions
+* Max stacking limits
+* Fragile items only on top
+* No SKU placed on incompatible SKU
+* Weight distribution acceptable
+* Axle loads within limits
+
+If violations exist → mark plan invalid.
+
+---
+
+# 6. **3D Visualization Requirements**
+
+### Tools:
+
+* Three.js
+* OrbitControls (camera)
+* Color coding by SKU
+* Wireframe mode toggle
+* Toggle visibility per SKU
+* Heatmap of empty space (optional)
+* Axle load visual indicator
+
+### Interactive Editing:
+
+* Drag items on X/Y plane
+* Rotate item via UI
+* Snap-to-grid
+* Auto re-validate after move
+
+---
+
+# 7. **API Specification (Essential Endpoints)**
+
+```
+POST /auth/login
+POST /auth/signup
+
+POST /sku
+GET  /sku
+PUT  /sku/{id}
+DELETE /sku/{id}
+
+POST /container
+GET /container
+
+POST /plan
+GET /plan/{id}
+POST /plan/{id}/optimize
+GET /plan/{id}/export?format=csv/pdf/gltf
+
+GET /jobs/{id}
+```
+
+---
+
+# 8. **Database Schema (Simplified)**
+
+### Tables
+
+* users
+* skus
+* containers
+* plans
+* placements
+* jobs
+
+Use foreign keys + indexing for (plan_id, sku_id).
+
+---
+
+# 9. **User Interface Specification**
+
+### Main Pages
+
+1. Login / Signup
+2. Dashboard (projects list)
+3. Create Project → Upload SKU list (CSV)
+4. Define Truck / Space
+5. Instant Preview Page
+6. Optimize Page
+7. 3D Viewer Page
+8. Export Results
+9. Admin / Settings
+
+### Panels in Viewer
+
+* SKU list
+* Constraint warnings
+* Utilization statistics
+* Weight distribution chart
+* Layer visibility toggle
+
+---
+
+# 10. **Imports & Exports**
+
+### Import
+
+* SKU CSV or Excel
+  Format:
+
+```
+name, length, width, height, weight, quantity, fragile, max_stack, stacking_group
+```
+
+### Export
+
+* PDF packing plan
+* CSV placements
+* 3D GLTF model
+* JPEG snapshot
+
+---
+
+# 11. **Constraints & Validation Rules**
+
+### Hard Constraints:
+
+* Item must be fully inside container
+* No overlap
+* Rotation must be allowed
+* Max stacking cannot exceed
+* Door entry must be possible
+* Axle loads cannot exceed limit
+
+### Soft Constraints:
+
+* Prefer balanced weight
+* Prefer fewer gaps
+* Prefer high utilization
+
+Penalty-based scoring recommended.
+
+---
+
+# 12. **Performance Requirements**
+
+* 200 items → instant preview under 1 second
+* 200–1000 items → GA optimization < 60 seconds
+* Support up to 10,000 items in async mode
+
+---
+
+# 13. **Security Requirements**
+
+* JWT auth
+* Input sanitization
+* RBAC (optional)
+* Rate limiting
+* HTTPS only
+
+---
+
+# 14. **Deployment Requirements**
+
+* Dockerized backend + frontend
+* Worker autoscaling
+* CDN for assets
+* Postgres + Redis
+* Logging + monitoring (Grafana/Prometheus)
+
+---
+
+# 15. **MVP Roadmap**
+
+### **Phase 1 — Core**
+
+* SKU input
+* Container input
+* Fast heuristic
+* Basic 3D viewer
+
+### **Phase 2 — Optimization**
+
+* Add GA solver
+* Weight balancing
+* Door validation
+* Reports (CSV, PDF)
+
+### **Phase 3 — Advanced**
+
+* Manual editing
+* Multi-container planning
+* Saved projects
+* Export 3D GLTF
+
+### **Phase 4 — Enterprise**
+
+* Multi-user teams
+* API integrations
+* Warehouse layout mode
+
+---
+
+# 16. **Glossary**
+
+* SKU = Stock Keeping Unit (unique product)
+* FFD = First Fit Decreasing
+* GA = Genetic Algorithm
+* SA = Simulated Annealing
+* ILP = Integer Linear Programming
+* Placement = Position + rotation of a box
+
+---
+
+# 17. **Final Instruction to the AI Model**
+
+Using the above complete specification:
+
+* Generate code
+* Generate architecture diagrams
+* Generate full backend + frontend
+* Generate database schemas
+* Generate test plans
+* Generate API documentation
+* Generate deployment scripts
+
+Produce everything needed to build the full application end-to-end.
+

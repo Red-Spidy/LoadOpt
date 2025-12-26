@@ -1,0 +1,7 @@
+name,length,width,height,weight,quantity,fragile,max_stack,stacking_group,priority
+Box A,100,50,30,10,25,false,999,,1
+Box B,80,60,40,15,30,false,999,,1
+Box C,120,70,50,20,20,true,0,,2
+Box D,60,40,30,8,30,false,5,,1
+Box E,90,50,40,12,30,false,999,,1
+

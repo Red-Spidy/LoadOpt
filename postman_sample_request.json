@@ -1,0 +1,149 @@
+{
+  "request_id": "TMS-ORDER-12345-20251226",
+  "container": {
+    "type": "40FT_HC",
+    "dimensions": {
+      "length": 1203.0,
+      "width": 235.0,
+      "height": 269.0,
+      "unit": "cm"
+    },
+    "weight_limit": {
+      "value": 28000.0,
+      "unit": "kg"
+    },
+    "door": {
+      "width": 234.0,
+      "height": 259.0
+    },
+    "axle_limits": {
+      "front_axle_limit": 7500.0,
+      "rear_axle_limit": 11500.0,
+      "unit": "kg"
+    }
+  },
+  "items": [
+    {
+      "sku": "PALLET-EURO-A",
+      "description": "Euro Pallet - Electronics (Heavy)",
+      "dimensions": {
+        "length": 120.0,
+        "width": 80.0,
+        "height": 100.0,
+        "unit": "cm"
+      },
+      "weight": {
+        "value": 300.0,
+        "unit": "kg"
+      },
+      "quantity": 8,
+      "constraints": {
+        "stackable": true,
+        "fragile": false,
+        "max_stack_height": 3,
+        "allowed_rotations": [true, true, false, false, false, false],
+        "keep_upright": true
+      },
+      "delivery": {
+        "stop_number": 1,
+        "priority": 1,
+        "unload_sequence": "LIFO"
+      }
+    },
+    {
+      "sku": "BOX-MEDIUM-B",
+      "description": "Medium Cardboard Box - Textiles",
+      "dimensions": {
+        "length": 60.0,
+        "width": 40.0,
+        "height": 50.0,
+        "unit": "cm"
+      },
+      "weight": {
+        "value": 15.0,
+        "unit": "kg"
+      },
+      "quantity": 25,
+      "constraints": {
+        "stackable": true,
+        "fragile": false,
+        "max_stack_height": 5,
+        "allowed_rotations": [true, true, true, true, true, true]
+      },
+      "delivery": {
+        "stop_number": 1,
+        "priority": 2,
+        "unload_sequence": "LIFO"
+      }
+    },
+    {
+      "sku": "CRATE-WOOD-C",
+      "description": "Wooden Crate - Machinery Parts",
+      "dimensions": {
+        "length": 100.0,
+        "width": 100.0,
+        "height": 80.0,
+        "unit": "cm"
+      },
+      "weight": {
+        "value": 250.0,
+        "unit": "kg"
+      },
+      "quantity": 5,
+      "constraints": {
+        "stackable": false,
+        "fragile": true,
+        "max_stack_height": 1,
+        "allowed_rotations": [true, false, false, false, false, false],
+        "keep_upright": true
+      },
+      "delivery": {
+        "stop_number": 1,
+        "priority": 3,
+        "unload_sequence": "LIFO"
+      }
+    },
+    {
+      "sku": "BOX-SMALL-D",
+      "description": "Small Box - Consumer Goods",
+      "dimensions": {
+        "length": 40.0,
+        "width": 30.0,
+        "height": 30.0,
+        "unit": "cm"
+      },
+      "weight": {
+        "value": 8.0,
+        "unit": "kg"
+      },
+      "quantity": 50,
+      "constraints": {
+        "stackable": true,
+        "fragile": false,
+        "max_stack_height": 8,
+        "allowed_rotations": [true, true, true, true, false, false]
+      },
+      "delivery": {
+        "stop_number": 1,
+        "priority": 4,
+        "unload_sequence": "LIFO"
+      }
+    }
+  ],
+  "solver_options": {
+    "algorithm": "heuristic",
+    "max_execution_time_seconds": 30,
+    "optimization_level": "balanced",
+    "objectives": {
+      "maximize_utilization": true,
+      "minimize_center_of_gravity_deviation": true,
+      "respect_delivery_sequence": true,
+      "prefer_stable_stacking": true
+    }
+  },
+  "metadata": {
+    "tms_order_id": "ORD-2025-12345",
+    "client_id": "CLIENT-ACME-CORP",
+    "timestamp": "2025-12-26T10:30:00Z"
+  }
+}

@@ -1,0 +1,3 @@
+the goal is to optimize the placement of boxes in a container and providing a no damage policy.
+no item should be damaged due to pressure or weight, i.e no error from loadopt application.
+
