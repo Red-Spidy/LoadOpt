@@ -1,0 +1,63 @@
+# Windows reserved device names
+nul
+NUL
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+pip-log.txt
+pip-delete-this-directory.txt
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+dist/
+build/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+dist/
+build/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+# Docker
+docker-compose.override.yml
+
+# Uploads
+uploads/
+temp/
