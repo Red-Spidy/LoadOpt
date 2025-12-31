@@ -160,8 +160,7 @@ def convert_to_multistop_trip(
             is_time_critical=any(g.is_time_critical for g in groups) or False,
             time_window_start=float(primary_group.earliest_time.timestamp()) if primary_group.earliest_time else None,
             time_window_end=float(primary_group.latest_time.timestamp()) if primary_group.latest_time else None,
-            notes=primary_group.special_instructions if hasattr(primary_group, 'special_instructions') else "",
-            original_delivery_order=delivery_order  # Preserve original for box matching
+            notes=primary_group.special_instructions if hasattr(primary_group, 'special_instructions') else ""
         )
 
         stops.append(stop)

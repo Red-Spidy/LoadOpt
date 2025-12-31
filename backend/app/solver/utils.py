@@ -29,6 +29,63 @@ class Box:
         """Calculate box volume - cached property"""
         return self.length * self.width * self.height
     
+    def get_unique_rotations(self) -> List[int]:
+        """
+        Get list of unique allowed rotations for this box.
+        Filters out redundant rotations for boxes with equal dimensions.
+        
+        Returns:
+            List of rotation indices (0-5) that are allowed and unique
+        """
+        if not self.allowed_rotations or len(self.allowed_rotations) < 6:
+            return [0]  # Only original orientation
+        
+        unique_rotations = []
+        seen_dimensions = set()
+        
+        for rotation_idx in range(6):
+            if not self.allowed_rotations[rotation_idx]:
+                continue
+            
+            dims = self.get_rotated_dimensions(rotation_idx)
+            # Round to avoid floating point comparison issues
+            dims_tuple = tuple(round(d, 2) for d in dims)
+            
+            if dims_tuple not in seen_dimensions:
+                seen_dimensions.add(dims_tuple)
+                unique_rotations.append(rotation_idx)
+        
+        return unique_rotations if unique_rotations else [0]
+    
+    def get_rotated_dimensions(self, rotation: int) -> Tuple[float, float, float]:
+        """
+        Get box dimensions after applying rotation.
+        
+        Rotations:
+        0: Original (L, W, H)
+        1: 90° rotation (W, L, H)
+        2: 180° rotation (L, W, H) - same as 0
+        3: 270° rotation (W, L, H) - same as 1
+        4: Flip on side (H, W, L)
+        5: Flip end (L, H, W)
+        
+        Args:
+            rotation: Rotation index (0-5)
+            
+        Returns:
+            Tuple of (length, width, height) after rotation
+        """
+        if rotation == 0 or rotation == 2:
+            return (self.length, self.width, self.height)
+        elif rotation == 1 or rotation == 3:
+            return (self.width, self.length, self.height)
+        elif rotation == 4:
+            return (self.height, self.width, self.length)
+        elif rotation == 5:
+            return (self.length, self.height, self.width)
+        else:
+            return (self.length, self.width, self.height)
+    
     def __hash__(self):
         return hash((self.id, self.sku_id, self.instance_index))
 
@@ -114,6 +171,11 @@ class PlacedBox:
         return self.length * self.width * self.height
     
     @property
+    def base_area(self) -> float:
+        """Calculate base area (length × width)"""
+        return self.length * self.width
+    
+    @property
     def max_x(self) -> float:
         return self.x + self.length
     
@@ -128,6 +190,52 @@ class PlacedBox:
     @property
     def center(self) -> Tuple[float, float, float]:
         return (self.x + self.length/2, self.y + self.width/2, self.z + self.height/2)
+    
+    def overlaps_xy(self, other: 'PlacedBox') -> bool:
+        """Check if this box overlaps with another in XY plane"""
+        return not (
+            self.max_x <= other.x or self.x >= other.max_x or
+            self.max_y <= other.y or self.y >= other.max_y
+        )
+    
+    def get_xy_overlap_area(self, other: 'PlacedBox') -> float:
+        """Calculate the overlapping area in XY plane"""
+        # Calculate overlap dimensions
+        overlap_x_min = max(self.x, other.x)
+        overlap_x_max = min(self.max_x, other.max_x)
+        overlap_y_min = max(self.y, other.y)
+        overlap_y_max = min(self.max_y, other.max_y)
+        
+        # Check if there's actual overlap
+        if overlap_x_max <= overlap_x_min or overlap_y_max <= overlap_y_min:
+            return 0.0
+        
+        overlap_length = overlap_x_max - overlap_x_min
+        overlap_width = overlap_y_max - overlap_y_min
+        
+        return overlap_length * overlap_width
+    
+    def to_dict(self) -> Dict:
+        """Convert to dictionary for serialization"""
+        return {
+            'box_id': self.box.id,
+            'sku_id': self.box.sku_id,
+            'name': self.box.name if hasattr(self.box, 'name') and self.box.name else f"SKU-{self.box.sku_id}",
+            'position': {
+                'x': round(self.x, 2),
+                'y': round(self.y, 2),
+                'z': round(self.z, 2)
+            },
+            'dimensions': {
+                'length': round(self.length, 2),
+                'width': round(self.width, 2),
+                'height': round(self.height, 2)
+            },
+            'rotation': self.rotation,
+            'load_order': self.load_order,
+            'weight': round(self.box.weight, 2),
+            'delivery_order': self.box.delivery_order
+        }
 
 
 class SpatialGrid:

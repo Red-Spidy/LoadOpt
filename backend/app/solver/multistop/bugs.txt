@@ -1,0 +1,394 @@
+Below is **exactly what you asked for**, in two parts:
+
+1. **Minimal patch list** – concrete, surgical changes (what to change, where, and how)
+2. **Priority-ordered fix plan** – what to fix first to unblock everything, and why
+
+I am deliberately **not redesigning anything**. Every patch is minimal and local.
+
+---
+
+# PART 1 — MINIMAL PATCH LIST (EXACT, SURGICAL)
+
+I’ll list each patch as:
+
+* **File**
+* **Current code**
+* **Replace with**
+* **Why**
+
+---
+
+## PATCH 1 — STOP SILENT DELIVERY ORDER MUTATION (CRITICAL)
+
+### File
+
+`models.py`
+
+### Current code (Trip.**post_init**)
+
+```python
+for i, stop in enumerate(self.stops, start=1):
+    if stop.stop_number != i:
+        stop.stop_number = i
+```
+
+### Replace with
+
+```python
+expected = list(range(1, len(self.stops) + 1))
+actual = sorted(s.stop_number for s in self.stops)
+
+if actual != expected:
+    raise ValueError(
+        f"Invalid stop_number sequence: {actual}. "
+        f"Stops must be sequential starting from 1."
+    )
+```
+
+### Why
+
+* Prevents silent corruption of frontend delivery order
+* Every downstream bug depends on this being correct
+
+---
+
+## PATCH 2 — MAKE VIRTUAL SKU IDs ACTUALLY UNIQUE
+
+### File
+
+`preprocessor.py` → `_create_virtual_skus`
+
+### Current
+
+```python
+virtual_id=f"V{sku_id}_S{stop.stop_number}"
+```
+
+### Replace with
+
+```python
+virtual_id=f"{trip.trip_id}_SKU{sku_id}_S{stop.stop_number}"
+```
+
+*(You already have `trip` in scope.)*
+
+### Why
+
+* Prevents silent overwrites
+* Fixes disappearing boxes
+* Safe for caching, sets, dicts
+
+---
+
+## PATCH 3 — FIX PREFLIGHT CAPACITY CHECK (VOLUME LIE)
+
+### File
+
+`optimizer.py`
+
+### Current
+
+```python
+total_box_volume = sum(box.volume for box in sku_catalog.values())
+total_box_weight = sum(box.weight for box in sku_catalog.values())
+```
+
+### Replace with
+
+```python
+total_box_volume = sum(
+    box.volume * stop.sku_requirements.get(box.sku_id, 0)
+    for stop in trip.stops
+    for box in sku_catalog.values()
+)
+
+total_box_weight = sum(
+    box.weight * stop.sku_requirements.get(box.sku_id, 0)
+    for stop in trip.stops
+    for box in sku_catalog.values()
+)
+```
+
+### Why
+
+* Prevents attempting impossible loads
+* Stops downstream solver confusion
+
+---
+
+## PATCH 4 — NORMALIZE ZONE LENGTHS (REMOVE DEAD GAPS)
+
+### File
+
+`placement_engine.py` → `ZoneStrategy.proportional_zoning`
+
+### Insert AFTER computing `stop_proportions`
+
+```python
+total_prop = sum(stop_proportions.values())
+if total_prop > 0:
+    for k in stop_proportions:
+        stop_proportions[k] /= total_prop
+```
+
+### Why
+
+* Eliminates unused X-space
+* Ensures zones fully cover container length
+* Directly fixes your “gap but nothing fits” issue
+
+---
+
+## PATCH 5 — FIX ELEVATED EXTREME POINT WIDTH / LENGTH
+
+### File
+
+`placement_engine.py` → `_update_extreme_points`
+
+### Current (elevated X+ case)
+
+```python
+avail_length = self.container.length - placed.max_x
+available_width = max_width
+```
+
+### Replace with
+
+```python
+avail_length = self.container.length - placed.max_x
+available_width = max(
+    p.width for p in support_boxes
+)
+```
+
+### Same for Y+ elevated EP:
+
+```python
+available_length = max(
+    p.length for p in support_boxes
+)
+```
+
+### Why
+
+* Allows lateral expansion on top of boxes
+* Fixes vertical “wall stacking”
+* Unblocks small-box placement
+
+---
+
+## PATCH 6 — STOP DISCARDING VALID EXTREME POINTS
+
+### File
+
+`placement_engine.py` → `_update_extreme_points`
+
+### Current duplicate check
+
+```python
+if abs(existing_ep.x - np_quantized.x) < 0.01 and ...
+```
+
+### Replace with
+
+```python
+if (
+    abs(existing_ep.x - np_quantized.x) < 0.01 and
+    abs(existing_ep.y - np_quantized.y) < 0.01 and
+    abs(existing_ep.z - np_quantized.z) < 0.01 and
+    abs(existing_ep.available_length - np_quantized.available_length) < 0.01 and
+    abs(existing_ep.available_width - np_quantized.available_width) < 0.01
+):
+```
+
+### Why
+
+* Prevents EP starvation
+* Keeps better placement options alive
+
+---
+
+## PATCH 7 — FIX SAME-STOP BLOCKING LOGIC
+
+### File
+
+`placement_engine.py` → `_check_same_stop_blocking`
+
+### Replace entire logic body with
+
+```python
+candidate_stop = candidate.box.delivery_order
+
+for placed in nearby_placements:
+    if placed.box.delivery_order != candidate_stop:
+        continue
+
+    # Only block if placed is closer to door AND overlaps in YZ
+    if placed.x > candidate.x:
+        y_overlap = not (placed.max_y <= candidate.y or placed.y >= candidate.max_y)
+        z_overlap = not (placed.max_z <= candidate.z or placed.z >= candidate.max_z)
+
+        if y_overlap and z_overlap:
+            return False
+
+return True
+```
+
+### Why
+
+* Allows same-stop lateral and vertical packing
+* Prevents artificial spreading
+
+---
+
+## PATCH 8 — DEDUPLICATE REHANDLING EVENTS
+
+### File
+
+`validator.py` → `_generate_unload_plan`
+
+### After collecting `rehandling_events`, add
+
+```python
+unique = {}
+for e in rehandling_events:
+    key = (e.box_id, e.destination_stop)
+    unique[key] = e
+
+plan.rehandling_events = list(unique.values())
+```
+
+### Why
+
+* Prevents inflated rehandling counts
+* Fixes STRICT_LIFO false failures
+
+---
+
+## PATCH 9 — MAKE SAME-STOP BLOCKING A HARD ERROR
+
+### File
+
+`validator.py` → `_generate_unload_plan`
+
+### Current
+
+```python
+plan.is_feasible = False
+plan.warnings.append(...)
+```
+
+### Replace with
+
+```python
+plan.is_feasible = False
+plan.warnings.append(...)
+```
+
+AND in `_validate_unload_plan` add:
+
+```python
+if not plan.is_feasible:
+    result.add_error(
+        f"Stop {stop.stop_number}: Same-stop blocking detected"
+    )
+```
+
+### Why
+
+* Invalid plans must never be marked valid
+
+---
+
+## PATCH 10 — DERIVE VALIDITY, DO NOT TRUST OPTIMIZER
+
+### File
+
+`optimizer.py` → result creation
+
+### Replace
+
+```python
+is_valid=validation.valid,
+```
+
+### With
+
+```python
+is_valid=(validation.valid and all(p.is_feasible for p in unload_plans.values())),
+```
+
+### Why
+
+* Validator must be authoritative
+* Stops false “valid” plans
+
+---
+
+# PART 2 — PRIORITY-ORDERED FIX PLAN
+
+### 🔴 PHASE 1 — UNBLOCK EVERYTHING (DO FIRST)
+
+1. **Patch 1** — Stop mutating delivery order
+2. **Patch 2** — Fix VirtualSKU ID collisions
+3. **Patch 4** — Normalize zone lengths
+
+➡️ After this:
+
+* Zones align with stops
+* No dead X-space
+* No disappearing boxes
+
+---
+
+### 🟠 PHASE 2 — FIX PLACEMENT FAILURES
+
+4. **Patch 5** — Elevated EP geometry
+5. **Patch 6** — EP dedup logic
+6. **Patch 7** — Same-stop blocking fix
+
+➡️ After this:
+
+* Small boxes place correctly
+* No vertical walls
+* Space gets filled laterally
+
+---
+
+### 🟡 PHASE 3 — FIX VALIDATION LIES
+
+7. **Patch 8** — Rehandling dedup
+8. **Patch 9** — Same-stop blocking as error
+9. **Patch 10** — Derived validity
+
+➡️ After this:
+
+* STRICT_LIFO behaves correctly
+* Invalid plans never pass
+* Metrics become trustworthy
+
+---
+
+### 🟢 PHASE 4 — SAFETY / QUALITY
+
+10. **Patch 3** — Correct capacity preflight
+
+➡️ Prevents impossible runs early
+
+---
+
+## FINAL WORD
+
+If you apply **Phase 1 + Phase 2 only**, you will already see:
+
+* Items stop missing
+* Gaps disappear
+* Utilization jump significantly
+
+Phase 3 makes it **correct**.
+Phase 4 makes it **robust**.
+
+If you want, next I can:
+
+* generate **diff-style patches**, or
+* help you **validate fixes using your example scenarios** one by one.

@@ -49,7 +49,8 @@ class Stop:
         is_time_critical: If True, prioritize accessibility
         service_time_minutes: Expected time to unload/load at this stop
         notes: Additional instructions or constraints
-        original_delivery_order: Original delivery_order from database (preserved for box matching)
+        
+    Note: stop_number IS the delivery_order from frontend. Lower number = unloaded earlier.
     """
     stop_number: int
     location_id: str
@@ -61,7 +62,6 @@ class Stop:
     is_time_critical: bool = False
     service_time_minutes: float = 30.0
     notes: str = ""
-    original_delivery_order: Optional[int] = None  # Original delivery_order from database
 
     def __post_init__(self):
         """Validate stop parameters"""
@@ -119,9 +119,19 @@ class Trip:
     driver_instructions: str = ""
 
     def __post_init__(self):
-        """Validate trip and renumber stops if needed"""
+        """Validate trip stop sequence - DO NOT MUTATE"""
         if not self.stops:
             raise ValueError("Trip must have at least one stop")
+        
+        # CRITICAL: Validate sequence without mutation
+        expected = list(range(1, len(self.stops) + 1))
+        actual = sorted(s.stop_number for s in self.stops)
+        
+        if actual != expected:
+            raise ValueError(
+                f"Invalid stop_number sequence: {actual}. "
+                f"Stops must be sequential starting from 1 (expected {expected})."
+            )
 
         # Ensure stops are numbered sequentially starting from 1
         for i, stop in enumerate(self.stops, start=1):
@@ -420,6 +430,20 @@ class MultiStopLoadPlan:
             p for p in self.placements
             if p.box.delivery_order == stop_number
         ]
+    
+    @property
+    def volume_utilization(self) -> float:
+        """Alias for overall_utilization_pct for backward compatibility"""
+        return self.overall_utilization_pct
+    
+    @property
+    def validation(self):
+        """Create validation object for API response"""
+        return type('Validation', (), {
+            'all_constraints_met': self.is_valid,
+            'errors': self.validation_errors,
+            'warnings': self.validation_warnings
+        })()
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for API response"""

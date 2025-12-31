@@ -261,10 +261,10 @@ class WeightDistribution(BaseModel):
 class PlanBase(BaseModel):
     name: str
     container_id: int
-    solver_mode: Optional[SolverModeEnum] = SolverModeEnum.FAST
+    solver_mode: Optional[SolverModeEnum] = None  # Auto-detect based on stops
 
     # Multi-stop configuration (optional)
-    use_advanced_multistop: bool = False
+    use_advanced_multistop: Optional[bool] = None  # Auto-detect based on stops
     unload_strategy: Optional[UnloadStrategyEnum] = UnloadStrategyEnum.MINIMAL_REHANDLING
     max_rehandling_events: int = Field(default=5, ge=0)
     rehandling_cost_per_event: float = Field(default=10.0, ge=0.0, description="Cost per rehandling event in minutes")

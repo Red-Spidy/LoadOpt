@@ -25,23 +25,26 @@ class PriorityWeights:
 
     These weights determine the relative importance of different factors
     when deciding load order. Higher weight = more important.
+    
+    All values are configurable to adapt to different operational requirements,
+    vehicle types, and customer preferences. No logic is hardcoded.
     """
-    # Stop-based weights
-    stop_priority_base: float = 1000.0  # Earlier stops get higher priority
-    stop_priority_multiplier: float = 100.0  # Penalty per stop number
+    # Stop-based weights (LIFO principle)
+    stop_priority_base: float = 1000.0  # Base priority for stop ordering
+    stop_priority_multiplier: float = 100.0  # Priority decrease per stop number
 
     # Physical property weights
-    fragile_bonus: float = 500.0  # Fragile items loaded first (near door)
-    heavy_weight_threshold: float = 50.0  # kg
-    heavy_item_bonus: float = 200.0  # Heavy items lower/earlier
-    non_stackable_penalty: float = 300.0  # Non-stackable must go on floor
+    fragile_bonus: float = 500.0  # Bonus for fragile items (keep accessible)
+    heavy_weight_threshold: float = 50.0  # Weight threshold for "heavy" classification (kg)
+    heavy_item_bonus: float = 200.0  # Bonus for heavy items (place low/stable)
+    non_stackable_penalty: float = 300.0  # Bonus for non-stackable (must be on floor)
 
     # SLA and criticality weights
-    time_critical_bonus: float = 800.0  # Time-critical stops prioritized
-    sla_priority_weight: float = 100.0  # User-defined priority amplifier
+    time_critical_bonus: float = 800.0  # Bonus for time-critical stops
+    sla_priority_weight: float = 100.0  # Multiplier for user-defined priority
 
     # Weight distribution factor
-    weight_factor: float = 1.0  # Linear weight factor (kg)
+    weight_factor: float = 1.0  # Linear weight contribution factor (per kg)
 
 
 class MultiStopPreprocessor:
@@ -104,8 +107,14 @@ class MultiStopPreprocessor:
         # Step 4: Generate box instances from virtual SKUs
         boxes = self._generate_box_instances(virtual_skus)
 
-        # Step 5: Sort boxes by priority (highest first)
-        boxes.sort(key=lambda b: b.priority, reverse=True)
+        # Step 5: Sort boxes by DELIVERY_ORDER first (LIFO: higher delivery_order loads first),
+        # then by priority score (secondary for tie-breaking within same stop)
+        # LIFO Logic: Stop 3 loads first (deep/back) → Stop 2 → Stop 1 (near door)
+        # Safety: handle None values in delivery_order or priority
+        boxes.sort(key=lambda b: (
+            -(b.delivery_order if b.delivery_order is not None else 0),
+            -(b.priority if b.priority is not None else 0)
+        ))
 
         # Step 6: Collect metadata
         metadata = self._collect_metadata(trip, virtual_skus, boxes)
@@ -157,13 +166,15 @@ class MultiStopPreprocessor:
             for sku_id, quantity in stop.sku_requirements.items():
                 base_box = sku_catalog[sku_id]
 
-                # Use original_delivery_order if available, otherwise fall back to stop_number
-                delivery_order = stop.original_delivery_order if stop.original_delivery_order is not None else stop.stop_number
+                # CLARIFICATION: stop_number IS the delivery_order from frontend
+                # Lower delivery_order = unloaded earlier = loaded later (near door)
+                # Example: delivery_order=1 is first stop, should be near door (high X)
 
+                # PATCH 2: Include trip_id for true global uniqueness
                 virtual_sku = VirtualSKU(
-                    virtual_id=f"V{sku_id}_S{stop.stop_number}",
+                    virtual_id=f"{trip.trip_id}_SKU{sku_id}_S{stop.stop_number}",
                     original_sku_id=sku_id,
-                    stop_number=delivery_order,  # Use original delivery_order for box matching
+                    stop_number=stop.stop_number,  # Use stop_number directly - it IS the delivery_order
                     quantity=quantity,
                     base_box=base_box,
                     priority_score=0.0  # Computed next
@@ -191,6 +202,17 @@ class MultiStopPreprocessor:
                  + SLAPriority
                  + WeightFactor
 
+        CRITICAL CLARIFICATION:
+        ----------------------
+        Priority is a TIE-BREAKER within same delivery_order groups.
+        PRIMARY sort is by delivery_order (LIFO: Stop 3 → Stop 2 → Stop 1).
+        Priority ONLY matters for ordering boxes within the same stop.
+        
+        Physical placement (high/low in container) is determined by:
+        1. delivery_order (LIFO principle)
+        2. placement engine's spatial scoring (z-level, support, stability)
+        3. priority as final tie-breaker
+
         RATIONALE:
         ----------
 
@@ -200,19 +222,20 @@ class MultiStopPreprocessor:
            - Stop 1: 1000 - (1 * 100) = 900
            - Stop 2: 1000 - (2 * 100) = 800
            - Stop 3: 1000 - (3 * 100) = 700
-           - NOTE: These scores are used for TIE-BREAKING only
-           - PRIMARY sort key is delivery_order (see core.py)
-           - LIFO: High delivery_order loads first (back) → unloads last
-           - Example: Stop 3 boxes placed first (deep in truck)
+           - NOTE: These scores are used for TIE-BREAKING within same stop
+           - PRIMARY sort key is delivery_order (LIFO principle)
+           - LIFO: Higher delivery_order loads first (deep/back) → unloads last
+           - Example: Stop 3 boxes placed first (deep in container, low X)
+           - Stop 1 boxes placed last (near door, high X)
 
         2. **FragilityBonus**:
-           - Fragile items can't have weight on top
-           - Load them first so they end up accessible/on top
+           - Fragile items preferred earlier in placement sequence within their stop
+           - Placement engine will still position them appropriately (top/accessible)
            - Bonus: +500
 
         3. **HeavyItemBonus**:
-           - Heavy items should be low and stable
-           - Loading earlier puts them deeper/lower
+           - Heavy items preferred earlier in placement sequence within their stop
+           - Placement engine will still position them appropriately (low/stable)
            - Bonus: +200 if weight > threshold
 
         4. **NonStackablePenalty**:
@@ -316,7 +339,7 @@ class MultiStopPreprocessor:
                     max_stack=vsku.base_box.max_stack,
                     stacking_group=vsku.base_box.stacking_group,
                     allowed_rotations=vsku.base_box.allowed_rotations.copy(),
-                    priority=int(vsku.priority_score),  # Use computed priority
+                    priority=vsku.priority_score,  # Use computed priority (preserve precision)
                     delivery_order=vsku.stop_number,  # CRITICAL: which stop
                     load_bearing_capacity=vsku.base_box.load_bearing_capacity,
                     color=vsku.base_box.color,

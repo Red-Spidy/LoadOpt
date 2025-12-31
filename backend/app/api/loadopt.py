@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, status
 from typing import List
 import time
 from datetime import datetime
+import logging
 
 from app.schemas.loadopt_schemas import (
     LoadOptimizationRequest,
@@ -28,6 +29,7 @@ from app.schemas.loadopt_schemas import (
 from app.solver.heuristic import HeuristicSolver, LayerBuildingHeuristic, LayerBuildingHeuristicRotated
 from app.solver.utils import Box, ContainerSpace
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Service start time for uptime tracking
@@ -48,9 +50,21 @@ def convert_request_to_solver_objects(request: LoadOptimizationRequest):
     """
     boxes = []
     
+    # Track SKU to ID mapping
+    sku_id_map = {}
+    current_sku_id = 1
+    
     # Convert items to Box objects
+    box_id = 1
     for item in request.items:
-        for _ in range(item.quantity):
+        # Assign SKU ID if not seen before
+        if item.sku not in sku_id_map:
+            sku_id_map[item.sku] = current_sku_id
+            current_sku_id += 1
+        
+        sku_id = sku_id_map[item.sku]
+        
+        for instance_index in range(item.quantity):
             # Handle unit conversion if needed (assuming cm and kg as base)
             length = item.dimensions.length
             width = item.dimensions.width
@@ -70,25 +84,31 @@ def convert_request_to_solver_objects(request: LoadOptimizationRequest):
             if item.weight.unit == UnitEnum.lb:
                 weight *= 0.453592
             
-            # Create Box object
+            # Create Box object matching the dataclass signature
             box = Box(
-                sku=item.sku,
+                id=box_id,
+                sku_id=sku_id,
+                instance_index=instance_index,
                 length=length,
                 width=width,
                 height=height,
                 weight=weight,
-                priority=item.delivery.priority if item.delivery else 1,
-                delivery_order=item.delivery.stop_number if item.delivery else 1,
-                stackable=item.constraints.stackable if item.constraints else True,
                 fragile=item.constraints.fragile if item.constraints else False,
                 max_stack=item.constraints.max_stack_height if item.constraints else 10,
+                stacking_group=None,
+                priority=item.delivery.priority if item.delivery else 1,
                 allowed_rotations=(
                     item.constraints.allowed_rotations 
                     if item.constraints and item.constraints.allowed_rotations 
                     else [True] * 6
-                )
+                ),
+                delivery_order=item.delivery.stop_number if item.delivery else 1,
+                name=item.sku,
+                color=None,
+                load_bearing_capacity=None
             )
             boxes.append(box)
+            box_id += 1
     
     # Convert container
     container_dims = request.container.dimensions
@@ -178,7 +198,7 @@ def convert_placements_to_response(placements: List, stats: dict, request_id: st
         
         placement = Placement(
             placement_id=idx + 1,
-            sku=placed.box.sku,
+            sku=placed.box.name if placed.box.name else f"SKU-{placed.box.sku_id}",
             position=Position(
                 x=round(placed.x, 2),
                 y=round(placed.y, 2),
@@ -285,7 +305,7 @@ def convert_placements_to_response(placements: List, stats: dict, request_id: st
     response_model=LoadOptimizationResponse,
     status_code=status.HTTP_200_OK,
     summary="Optimize Load Plan",
-    description="Execute 3D load optimization and return placement plan"
+    description="Execute 3D load optimization and return placement plan. Automatically detects single-stop vs multi-stop scenarios."
 )
 async def optimize_load(request: LoadOptimizationRequest):
     """
@@ -294,10 +314,15 @@ async def optimize_load(request: LoadOptimizationRequest):
     Execute 3D bin packing optimization for the given container and items.
     Returns detailed placement coordinates, utilization metrics, and validation results.
     
+    **Automatic Mode Detection:**
+    - Single-stop: All items have the same stop_number or no stop_number specified
+    - Multi-stop: Items have 2+ different stop_numbers
+    
     **Algorithm Options:**
     - `heuristic`: Fast extreme-points based placement (recommended)
     - `layer`: Layer-building approach for homogeneous loads
     - `layer_rotated`: Layer-building with rotation support
+    - `multistop`: Multi-stop optimization (auto-selected when needed)
     
     **Example Usage:**
     ```json
@@ -350,18 +375,82 @@ async def optimize_load(request: LoadOptimizationRequest):
                 }
             )
         
+        # AUTOMATIC DETECTION: Check if this is single-stop or multi-stop
+        unique_stops = set(box.delivery_order for box in boxes)
+        is_multistop = len(unique_stops) > 1
+        
+        logger.info(f"Request {request.request_id}: Detected {len(unique_stops)} unique stops - "
+                   f"Mode: {'MULTI-STOP' if is_multistop else 'SINGLE-STOP'}")
+        
         # Select solver algorithm
         algorithm = request.solver_options.algorithm if request.solver_options else "heuristic"
         
-        if algorithm == "layer":
+        # Override algorithm if multi-stop is detected and algorithm wasn't explicitly set to multistop
+        if is_multistop and algorithm != "multistop":
+            logger.info(f"Auto-switching from '{algorithm}' to 'multistop' due to multiple delivery stops")
+            algorithm = "multistop"
+        
+        if algorithm == "multistop" and is_multistop:
+            # Use multi-stop optimizer
+            from app.solver.multistop.optimizer import quick_optimize
+            from app.solver.multistop.models import Trip, Stop, StopType
+            
+            # Create Trip from boxes
+            stops_dict = {}
+            for box in boxes:
+                stop_num = box.delivery_order
+                if stop_num not in stops_dict:
+                    stops_dict[stop_num] = {}
+                stops_dict[stop_num][box.sku_id] = stops_dict[stop_num].get(box.sku_id, 0) + 1
+            
+            stops = []
+            for stop_num in sorted(stops_dict.keys()):
+                stops.append(Stop(
+                    stop_number=stop_num,
+                    location_id=f"STOP-{stop_num}",
+                    location_name=f"Stop {stop_num}",
+                    sku_requirements=stops_dict[stop_num],
+                    stop_type=StopType.DELIVERY
+                ))
+            
+            trip = Trip(
+                trip_id=request.request_id,
+                stops=stops,
+                container=container
+            )
+            
+            # Create SKU catalog
+            sku_catalog = {}
+            for box in boxes:
+                if box.sku_id not in sku_catalog:
+                    sku_catalog[box.sku_id] = box
+            
+            # Run multi-stop optimization
+            result = quick_optimize(trip, sku_catalog)
+            placements = result.placements
+            stats = {
+                'volume_used': sum(p.volume for p in placements),
+                'volume_total': container.volume,
+                'utilization_pct': result.volume_utilization,
+                'total_weight': sum(p.box.weight for p in placements),
+                'weight_limit': container.max_weight,
+                'weight_pct': (sum(p.box.weight for p in placements) / container.max_weight * 100),
+                'total_boxes': len(boxes),
+                'placed_count': len(placements),
+                'failed_count': len(boxes) - len(placements),
+                'warnings': result.validation.warnings if result.validation else [],
+                'errors': result.validation.errors if result.validation else []
+            }
+            
+        elif algorithm == "layer":
             solver = LayerBuildingHeuristic(boxes, container)
+            placements, stats = solver.solve()
         elif algorithm == "layer_rotated":
             solver = LayerBuildingHeuristicRotated(boxes, container)
+            placements, stats = solver.solve()
         else:  # heuristic (default)
             solver = HeuristicSolver(boxes, container)
-        
-        # Run solver
-        placements, stats = solver.solve()
+            placements, stats = solver.solve()
         
         # Calculate execution time
         execution_time_ms = int((time.time() - start_time) * 1000)
@@ -380,7 +469,13 @@ async def optimize_load(request: LoadOptimizationRequest):
     except HTTPException:
         raise
     except Exception as e:
+        import traceback
         execution_time_ms = int((time.time() - start_time) * 1000)
+        
+        # Log full traceback for debugging
+        logger.error(f"Optimization failed: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={
@@ -391,7 +486,8 @@ async def optimize_load(request: LoadOptimizationRequest):
                     "message": f"Optimization failed: {str(e)}",
                     "details": {
                         "execution_time_ms": execution_time_ms,
-                        "exception_type": type(e).__name__
+                        "exception_type": type(e).__name__,
+                        "traceback": traceback.format_exc().split('\n')[-10:]  # Last 10 lines
                     }
                 }
             }
@@ -428,19 +524,24 @@ async def validate_load(request: LoadOptimizationRequest):
         
         # Weight validation
         total_weight = sum(box.weight for box in boxes)
-        if total_weight > container.max_weight:
+        if hasattr(container, 'max_weight') and container.max_weight and total_weight > container.max_weight:
             errors.append(f"Total weight ({total_weight:.2f} kg) exceeds container limit ({container.max_weight:.2f} kg)")
         
         # Dimension validation
         for box in boxes:
             if box.length > container.length or box.width > container.width or box.height > container.height:
-                errors.append(f"SKU {box.sku} dimensions exceed container dimensions")
+                errors.append(f"SKU {box.sku_id} dimensions exceed container dimensions")
         
         # Door validation
-        if container.door_width or container.door_height:
+        has_door_width = hasattr(container, 'door_width') and container.door_width is not None
+        has_door_height = hasattr(container, 'door_height') and container.door_height is not None
+        
+        if has_door_width or has_door_height:
             for box in boxes:
-                if box.width > container.door_width or box.height > container.door_height:
-                    warnings.append(f"SKU {box.sku} may not fit through door opening")
+                width_issue = has_door_width and box.width > container.door_width
+                height_issue = has_door_height and box.height > container.door_height
+                if width_issue or height_issue:
+                    warnings.append(f"SKU {box.sku_id} may not fit through door opening")
         
         execution_time_ms = int((time.time() - start_time) * 1000)
         
@@ -451,13 +552,17 @@ async def validate_load(request: LoadOptimizationRequest):
             errors=errors
         )
         
+        # Calculate weight percentage safely
+        weight_limit = container.max_weight if hasattr(container, 'max_weight') and container.max_weight else total_weight
+        weight_percentage = round((total_weight / weight_limit) * 100, 2) if weight_limit > 0 else 0
+        
         utilization = Utilization(
             volume_used_cm3=0,
             volume_total_cm3=container.length * container.width * container.height,
             volume_percentage=0,
             weight_used_kg=total_weight,
-            weight_limit_kg=container.max_weight,
-            weight_percentage=round((total_weight / container.max_weight) * 100, 2)
+            weight_limit_kg=weight_limit,
+            weight_percentage=weight_percentage
         )
         
         statistics = Statistics(

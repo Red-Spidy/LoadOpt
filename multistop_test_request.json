@@ -1,0 +1,79 @@
+{
+  "request_id": "MULTISTOP-TEST-001",
+  "container": {
+    "type": "40FT_HC",
+    "dimensions": {
+      "length": 1200.0,
+      "width": 240.0,
+      "height": 260.0,
+      "unit": "cm"
+    },
+    "weight_limit": {
+      "value": 28000.0,
+      "unit": "kg"
+    }
+  },
+  "items": [
+    {
+      "sku": "STOP1-BOX-A",
+      "description": "Box for delivery stop 1",
+      "dimensions": {
+        "length": 80.0,
+        "width": 60.0,
+        "height": 50.0,
+        "unit": "cm"
+      },
+      "weight": {
+        "value": 25.0,
+        "unit": "kg"
+      },
+      "quantity": 20,
+      "constraints": {
+        "stackable": true,
+        "fragile": false,
+        "max_stack_height": 3,
+        "allowed_rotations": [true, true, false, false, false, false],
+        "keep_upright": true
+      },
+      "delivery": {
+        "stop_number": 1,
+        "priority": 1,
+        "unload_sequence": "LIFO"
+      }
+    },
+    {
+      "sku": "STOP2-BOX-B",
+      "description": "Box for delivery stop 2",
+      "dimensions": {
+        "length": 60.0,
+        "width": 40.0,
+        "height": 40.0,
+        "unit": "cm"
+      },
+      "weight": {
+        "value": 15.0,
+        "unit": "kg"
+      },
+      "quantity": 30,
+      "constraints": {
+        "stackable": true,
+        "fragile": false,
+        "max_stack_height": 4,
+        "allowed_rotations": [true, true, false, false, false, false],
+        "keep_upright": true
+      },
+      "delivery": {
+        "stop_number": 2,
+        "priority": 1,
+        "unload_sequence": "LIFO"
+      }
+    }
+  ],
+  "algorithm": "heuristic",
+  "optimization_level": "balanced",
+  "options": {
+    "enable_rotation": true,
+    "respect_stacking_rules": true,
+    "optimize_for_unloading": true
+  }
+}

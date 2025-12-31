@@ -17,7 +17,7 @@ from .models import (
     RehandlingEvent,
     StopMetrics
 )
-from .optimizer import MultiStopOptimizer
+from .optimizer import MultiStopOptimizer, quick_optimize
 from .validator import MultiStopValidator
 
 __all__ = [
@@ -29,5 +29,6 @@ __all__ = [
     'RehandlingEvent',
     'StopMetrics',
     'MultiStopOptimizer',
+    'quick_optimize',
     'MultiStopValidator'
 ]

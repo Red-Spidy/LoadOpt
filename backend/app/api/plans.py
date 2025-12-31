@@ -11,7 +11,7 @@ from app.api.dependencies import get_current_active_user
 from app.models.models import User, Plan, Project, Container, SKU, Placement, PlanStatus, SolverMode
 from app.schemas.schemas import (
     PlanCreate, Plan as PlanSchema, PlanWithPlacements, 
-    PlanUpdate, Placement as PlacementSchema
+    PlanUpdate, Placement as PlacementSchema, SolverModeEnum
 )
 
 # Always import solver utils for convert functions
@@ -109,12 +109,41 @@ def create_plan(
     skus = db.query(SKU).filter(SKU.project_id == plan_in.project_id).all()
     total_items = sum(sku.quantity for sku in skus)
     
+    # Auto-detect multi-stop based on delivery groups
+    unique_delivery_groups = set(
+        sku.delivery_group_id for sku in skus 
+        if sku.delivery_group_id is not None
+    )
+    has_multiple_stops = len(unique_delivery_groups) > 1
+    
+    # Set defaults based on detection if not explicitly provided
+    solver_mode = plan_in.solver_mode
+    use_advanced_multistop = plan_in.use_advanced_multistop
+    
+    if solver_mode is None:
+        # Auto-select: FAST for multi-stop (uses heuristic), OPTIMAL for single-stop
+        solver_mode = SolverModeEnum.FAST if has_multiple_stops else SolverModeEnum.OPTIMAL
+    
+    if use_advanced_multistop is None:
+        # Auto-enable for multiple stops
+        use_advanced_multistop = has_multiple_stops
+    
+    # CRITICAL: Force FAST mode when multi-stop is enabled
+    # OPTIMAL solver doesn't support zone-based multi-stop placement
+    if use_advanced_multistop:
+        solver_mode = SolverModeEnum.FAST
+        print(f"⚠️  Multi-stop enabled - forcing FAST solver mode (was: {plan_in.solver_mode})")
+    
     # Create plan
     plan = Plan(
         project_id=plan_in.project_id,
         container_id=plan_in.container_id,
         name=plan_in.name,
-        solver_mode=plan_in.solver_mode,
+        solver_mode=solver_mode,
+        use_advanced_multistop=use_advanced_multistop,
+        unload_strategy=plan_in.unload_strategy,
+        max_rehandling_events=plan_in.max_rehandling_events,
+        rehandling_cost_per_event=plan_in.rehandling_cost_per_event,
         status=PlanStatus.PENDING,
         items_total=total_items
     )

@@ -32,6 +32,22 @@ class ValidationResult:
             self.errors = []
         if self.warnings is None:
             self.warnings = []
+    
+    def add_error(self, error: str):
+        """Add an error message"""
+        self.errors.append(error)
+        self.valid = False
+    
+    def add_warning(self, warning: str):
+        """Add a warning message"""
+        self.warnings.append(warning)
+    
+    def merge(self, other: 'ValidationResult') -> 'ValidationResult':
+        """Merge another validation result into this one"""
+        self.errors.extend(other.errors)
+        self.warnings.extend(other.warnings)
+        self.valid = self.valid and other.valid
+        return self
 
 
 @dataclass
@@ -81,16 +97,18 @@ class MultiStopValidator:
     - Cannot rehandle boxes from EARLIER or SAME stop (creates circular dependency)
     """
 
-    def __init__(self, trip: Trip, container: Container):
+    def __init__(self, trip: Trip, container: Container, support_tolerance_cm: float = 0.1):
         """
         Initialize validator.
 
         Args:
             trip: Trip specification
             container: Container being loaded
+            support_tolerance_cm: Tolerance for support checks (default 0.1cm = 1mm)
         """
         self.trip = trip
         self.container = container
+        self.support_tolerance_cm = support_tolerance_cm
 
     def validate_and_analyze(
         self,
@@ -108,7 +126,7 @@ class MultiStopValidator:
             - Dict[int, UnloadPlan]: Unload plan for each stop
             - Dict[int, StopMetrics]: Metrics for each stop
         """
-        validation = ValidationResult(is_valid=True)
+        validation = ValidationResult(valid=True)
         unload_plans = {}
         stop_metrics = {}
 
@@ -155,13 +173,21 @@ class MultiStopValidator:
             )
             stop_metrics[stop_num] = metrics
 
-            # Check rehandling limits
-            if (unload_plan.rehandling_count > self.trip.max_rehandling_events and
-                self.trip.unload_strategy == UnloadStrategy.STRICT_LIFO):
-                validation.add_error(
-                    f"Stop {stop_num}: Requires {unload_plan.rehandling_count} "
-                    f"rehandling events, exceeds limit of {self.trip.max_rehandling_events}"
-                )
+            # Check rehandling limits - CONSISTENT with validate_unload_plan
+            if self.trip.unload_strategy == UnloadStrategy.STRICT_LIFO:
+                if unload_plan.rehandling_count > self.trip.max_rehandling_events:
+                    validation.add_error(
+                        f"Stop {stop_num}: Requires {unload_plan.rehandling_count} "
+                        f"rehandling events, exceeds STRICT_LIFO limit of {self.trip.max_rehandling_events}"
+                    )
+
+        # BUG V8 FIX: Detect circular dependencies (same-stop boxes blocking each other)
+        circular_deps = detect_circular_dependencies(placements)
+        if circular_deps:
+            validation.add_error(
+                f"Circular blocking dependencies detected: {len(circular_deps)} pairs of boxes block each other. "
+                f"This indicates an infeasible load configuration."
+            )
 
         return validation, unload_plans, stop_metrics
 
@@ -184,14 +210,17 @@ class MultiStopValidator:
         current_stop: int
     ) -> List[PlacedBox]:
         """
-        Get all boxes for current stop and later stops.
+        Get all boxes for LATER stops (after current stop).
 
-        These are the boxes still in the container when arriving at
-        current_stop.
+        These are the boxes that remain in the container after unloading
+        current_stop, used for rehandling detection.
+        
+        BUG V4 FIX: Should be > not >= to exclude current stop.
+        Current stop boxes are handled separately.
         """
         return [
             p for p in placements
-            if p.box.delivery_order >= current_stop
+            if p.box.delivery_order > current_stop
         ]
 
     def _analyze_accessibility(
@@ -257,8 +286,9 @@ class MultiStopValidator:
         Check if blocker prevents direct access to blocked.
 
         Blocker must be:
-        1. In front of blocked (higher X coordinate)
+        1. In front of blocked (higher X coordinate - closer to door)
         2. Overlapping in YZ plane (in the "shadow" toward door)
+        3. At same Z level (vertical stacking doesn't block unloading)
 
         Args:
             blocker: Potential blocking box
@@ -267,7 +297,7 @@ class MultiStopValidator:
         Returns:
             True if blocker blocks access to blocked
         """
-        # Must be in front (closer to door) - blocker starts after blocked starts
+        # BUG V1 FIX: Door is at HIGH X, so blocker must have HIGHER X to block
         if blocker.x <= blocked.x:
             return False
 
@@ -283,7 +313,11 @@ class MultiStopValidator:
             blocker.z >= blocked.max_z
         )
 
-        return y_overlap and z_overlap
+        # BUG V2 FIX: Only boxes at same Z level block unloading
+        # Vertical stacking (different Z) does NOT block horizontal unloading
+        same_z_level = abs(blocker.z - blocked.z) < 0.1
+
+        return y_overlap and z_overlap and same_z_level
 
     def _calculate_accessibility_score(
         self,
@@ -315,9 +349,10 @@ class MultiStopValidator:
             if blocker.box.weight > 50.0:
                 penalty += 10.0
 
-        # Additional penalty for fragile blockers (can't roughly handle)
+        # Additional penalty for fragile blockers - strategy dependent
+        # Fragile boxes CAN be rehandled carefully under OPTIMIZED strategy
         for blocker in blockers:
-            if blocker.box.fragile:
+            if blocker.box.fragile and self.trip.unload_strategy == UnloadStrategy.STRICT_LIFO:
                 penalty += 20.0
 
         score = max(0.0, 100.0 - penalty)
@@ -378,17 +413,20 @@ class MultiStopValidator:
                 if blocker.box.delivery_order > stop.stop_number
             ]
 
-            # Check if blocked by boxes from SAME stop (problematic!)
+            # BUG V3 FIX: Check if blocked by boxes from SAME stop at SAME Z level
+            # Vertical stacking within same stop is ALLOWED
+            # Only horizontal blocking at same Z is problematic
             same_stop_blockers = [
                 blocker for blocker in box_analysis.blocked_by_boxes
                 if blocker.box.delivery_order == stop.stop_number
+                and abs(blocker.z - box.z) < 0.1  # Same Z level only
             ]
 
-            # If blocked by same-stop boxes, this is a configuration problem
+            # If blocked by same-stop boxes at same height, this is a configuration problem
             if same_stop_blockers:
                 plan.is_feasible = False
                 plan.warnings.append(
-                    f"Box {box.box.id} blocked by same-stop boxes: "
+                    f"Box {box.box.id} blocked by same-stop boxes at same Z level: "
                     f"{[b.box.id for b in same_stop_blockers]}. "
                     f"Cannot unload without unloading other same-stop boxes first."
                 )
@@ -405,7 +443,13 @@ class MultiStopValidator:
                 )
                 rehandling_events.append(event)
 
-        plan.rehandling_events = rehandling_events
+        # PATCH 8: Deduplicate rehandling events
+        unique_events = {}
+        for e in rehandling_events:
+            key = (e.box_id, e.destination_stop)
+            unique_events[key] = e
+        
+        plan.rehandling_events = list(unique_events.values())
 
         # Calculate accessibility score (average)
         if stop_boxes:
@@ -434,21 +478,19 @@ class MultiStopValidator:
         Returns:
             ValidationResult
         """
-        result = ValidationResult(is_valid=True)
+        result = ValidationResult(valid=True)
 
         # Check feasibility flag
         if not plan.is_feasible:
             result.add_error(
                 f"Stop {stop.stop_number}: Unload plan is infeasible"
             )
-
-        # Check rehandling limits
-        if (plan.rehandling_count > 0 and
-            self.trip.unload_strategy == UnloadStrategy.STRICT_LIFO):
-            result.add_warning(
-                f"Stop {stop.stop_number}: Requires {plan.rehandling_count} "
-                f"rehandling events under STRICT_LIFO strategy"
-            )
+            # PATCH 9: Add specific error for same-stop blocking
+            if any("same-stop boxes" in w for w in plan.warnings):
+                result.add_error(
+                    f"Stop {stop.stop_number}: Same-stop blocking detected - "
+                    f"boxes from this stop block each other"
+                )
 
         # Check accessibility
         if plan.accessibility_score < 30.0:
@@ -551,8 +593,11 @@ def detect_circular_dependencies(
                     continue
 
                 # Check if box_a blocks box_b
-                # (box_a is in front and overlaps YZ)
-                if box_a.x > box_b.max_x:
+                # Must be at same Z level to block (consistent with _box_blocks_access)
+                same_z_level = abs(box_a.z - box_b.z) < 0.1
+                
+                # box_a blocks if it's in front of box_b AND at same Z level
+                if box_a.x > box_b.x and same_z_level:
                     y_overlap = not (
                         box_a.max_y <= box_b.y or
                         box_a.y >= box_b.max_y

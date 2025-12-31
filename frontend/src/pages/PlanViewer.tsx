@@ -1,7 +1,7 @@
 import React from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { plansAPI, skusAPI, containersAPI } from '@/services/api';
+import { plansAPI, skusAPI, containersAPI, deliveryGroupsAPI } from '@/services/api';
 import { ArrowLeft, Download } from 'lucide-react';
 import Viewer3D from '@/components/Viewer3D';
 import type { SKU } from '@/types';
@@ -38,6 +38,12 @@ const PlanViewer: React.FC = () => {
   const { data: skus } = useQuery({
     queryKey: ['skus', plan?.project_id],
     queryFn: () => skusAPI.list(plan!.project_id),
+    enabled: !!plan?.project_id,
+  });
+
+  const { data: deliveryGroups } = useQuery({
+    queryKey: ['deliveryGroups', plan?.project_id],
+    queryFn: () => deliveryGroupsAPI.list(plan!.project_id),
     enabled: !!plan?.project_id,
   });
 
@@ -188,11 +194,18 @@ const PlanViewer: React.FC = () => {
                             <div className="text-xs text-gray-600">
                               Qty: <span className="font-semibold">{skuCounts[sku.id]}</span> of {sku.quantity}
                             </div>
-                            {sku.delivery_group_id && (
-                              <div className="text-xs text-blue-600 mt-0.5">
-                                📍 Delivery Group #{sku.delivery_group_id}
-                              </div>
-                            )}
+                            {sku.delivery_group_id && (() => {
+                              const group = deliveryGroups?.find(g => g.id === sku.delivery_group_id);
+                              return group ? (
+                                <div className="text-xs text-blue-600 mt-0.5">
+                                  📍 Delivery Order #{group.delivery_order} ({group.name})
+                                </div>
+                              ) : (
+                                <div className="text-xs text-blue-600 mt-0.5">
+                                  📍 Delivery Group #{sku.delivery_group_id}
+                                </div>
+                              );
+                            })()}
                             <div className="text-xs text-gray-500 mt-0.5">
                               {sku.length}×{sku.width}×{sku.height} cm, {sku.weight} kg
                             </div>

@@ -61,23 +61,34 @@ class MultiStopOptimizer:
         self,
         priority_weights: Optional[PriorityWeights] = None,
         use_proportional_zones: bool = True,
-        allow_zone_overflow: bool = True,
-        accessibility_weight: float = 0.5
+        allow_zone_overflow: bool = False,
+        accessibility_weight: float = 0.7,
+        collision_tolerance_cm: float = 0.1,
+        min_zone_length_cm: float = 80.0,
+        non_adjacent_stop_separation_cm: float = 50.0,
+        volume_overflow_threshold: float = 1.5
     ):
         """
         Initialize optimizer with configuration.
 
         Args:
             priority_weights: Weights for priority calculation
-            use_proportional_zones: If True, allocate zones by volume;
-                                   if False, use equal zones
-            allow_zone_overflow: Allow boxes to spill into adjacent zones
-            accessibility_weight: Weight for accessibility in placement (0-1)
+            use_proportional_zones: If True, allocate zones by volume; if False, use equal zones
+            allow_zone_overflow: If True, allow boxes to spill into adjacent zones
+            accessibility_weight: Weight for accessibility in placement (0-1, default 0.7)
+            collision_tolerance_cm: Tolerance for collision detection (default 0.1cm = 1mm)
+            min_zone_length_cm: Minimum zone length before fallback (default 80cm)
+            non_adjacent_stop_separation_cm: Min separation for non-adjacent stops (default 50cm)
+            volume_overflow_threshold: Max volume ratio before rejecting (default 1.5 = 150%)
         """
         self.priority_weights = priority_weights or PriorityWeights()
         self.use_proportional_zones = use_proportional_zones
         self.allow_zone_overflow = allow_zone_overflow
         self.accessibility_weight = accessibility_weight
+        self.collision_tolerance_cm = collision_tolerance_cm
+        self.min_zone_length_cm = min_zone_length_cm
+        self.non_adjacent_stop_separation_cm = non_adjacent_stop_separation_cm
+        self.volume_overflow_threshold = volume_overflow_threshold
 
     def optimize(
         self,
@@ -107,13 +118,51 @@ class MultiStopOptimizer:
             print(f"\n{'='*70}")
             print(f"MULTI-STOP LOAD OPTIMIZATION")
             if multi_algorithm:
-                print(f"MODE: COMPREHENSIVE (7-PHASE MULTI-ALGORITHM)")
+                print(f"MODE: COMPREHENSIVE (6-PHASE MULTI-ALGORITHM)")
             print(f"{'='*70}")
             print(f"Trip: {trip.trip_id}")
             print(f"Stops: {trip.num_stops}")
             print(f"Total items: {trip.total_items}")
             print(f"Strategy: {trip.unload_strategy.name}")
             print(f"{'='*70}\n")
+        
+        # Bug #13 Fix: Pre-flight capacity check
+        try:
+            # PATCH 3: Calculate ACTUAL total volume by multiplying by quantities
+            total_box_volume = sum(
+                box.volume * sum(
+                    stop.sku_requirements.get(box.sku_id, 0) 
+                    for stop in trip.stops
+                )
+                for box in sku_catalog.values()
+            )
+            container_volume = trip.container.length * trip.container.width * trip.container.height
+            
+            # PATCH 3: Calculate ACTUAL total weight by multiplying by quantities
+            total_box_weight = sum(
+                box.weight * sum(
+                    stop.sku_requirements.get(box.sku_id, 0)
+                    for stop in trip.stops
+                )
+                for box in sku_catalog.values()
+            )
+            
+            if total_box_volume > container_volume * 1.5:  # Allow 50% overhead for packing inefficiency
+                raise ValueError(
+                    f"Total box volume ({total_box_volume:.0f} cm³) exceeds container capacity "
+                    f"({container_volume:.0f} cm³) by >50%. Cannot fit all items."
+                )
+            
+            if hasattr(trip.container, 'max_weight') and trip.container.max_weight is not None:
+                if total_box_weight > trip.container.max_weight:
+                    raise ValueError(
+                        f"Total box weight ({total_box_weight:.0f} kg) exceeds container "
+                        f"max weight ({trip.container.max_weight:.0f} kg)."
+                    )
+        except (AttributeError, TypeError) as e:
+            # If pre-flight check fails due to missing attributes, log and continue
+            if verbose:
+                print(f"  ⚠ Pre-flight capacity check skipped: {e}")
 
         # PHASE 1: PREPROCESSING
         if verbose:
@@ -143,13 +192,13 @@ class MultiStopOptimizer:
         # Configuration matrix for multi-algorithm approach
         if multi_algorithm:
             configs = [
-                ("Proportional+Overflow", True, True, 0.5),
-                ("Proportional+NoOverflow", True, False, 0.5),
-                ("Sequential+Overflow", False, True, 0.5),
-                ("Sequential+NoOverflow", False, False, 0.5),
-                ("Proportional+HighAccess", True, True, 0.8),
-                ("Proportional+LowAccess", True, True, 0.2),
-                ("Sequential+HighAccess", False, True, 0.8),
+                # (Name, use_proportional, allow_overflow, accessibility_weight)
+                ("Strict+HighAccess", True, False, 0.8),      # NEW: Strictest - no overflow, high accessibility
+                ("Proportional+NoOverflow", True, False, 0.7),  # Strict zones, good accessibility
+                ("Proportional+Adjacent", True, True, 0.8),   # Now only allows adjacent overflow (via new logic)
+                ("Sequential+Strict", False, False, 0.7),     # Equal zones, no overflow
+                ("Proportional+Balanced", True, False, 0.5),  # Balanced approach
+                ("Sequential+Adjacent", False, True, 0.6),    # Equal zones with adjacent overflow
             ]
             
             if verbose:
@@ -162,7 +211,10 @@ class MultiStopOptimizer:
                 engine = MultiStopPlacementEngine(
                     container=trip.container,
                     trip=trip,
-                    use_proportional_zones=use_prop
+                    use_proportional_zones=use_prop,
+                    collision_tolerance_cm=self.collision_tolerance_cm,
+                    min_zone_length_cm=self.min_zone_length_cm,
+                    non_adjacent_stop_separation_cm=self.non_adjacent_stop_separation_cm
                 )
                 
                 placements_attempt = engine.place_boxes(
@@ -196,7 +248,10 @@ class MultiStopOptimizer:
             placement_engine = MultiStopPlacementEngine(
                 container=trip.container,
                 trip=trip,
-                use_proportional_zones=self.use_proportional_zones
+                use_proportional_zones=self.use_proportional_zones,
+                collision_tolerance_cm=self.collision_tolerance_cm,
+                min_zone_length_cm=self.min_zone_length_cm,
+                non_adjacent_stop_separation_cm=self.non_adjacent_stop_separation_cm
             )
 
             placements = placement_engine.place_boxes(
@@ -207,6 +262,15 @@ class MultiStopOptimizer:
 
             if verbose:
                 print(f"  ✓ Placed {len(placements)} / {len(boxes)} boxes")
+        
+        # POST-PLACEMENT VALIDATION: Check for collisions
+        collision_errors = self._check_for_collisions(placements)
+        if collision_errors and verbose:
+            print(f"\n  ✗ COLLISION DETECTION:")
+            for error in collision_errors[:5]:  # Show first 5
+                print(f"    {error}")
+            if len(collision_errors) > 5:
+                print(f"    ... and {len(collision_errors) - 5} more collision(s)")
 
         # Show zone utilization
         if verbose and placements and placement_engine:
@@ -222,7 +286,7 @@ class MultiStopOptimizer:
         )
 
         if verbose:
-            print(f"  ✓ Validation: {'PASSED' if validation.is_valid else 'FAILED'}")
+            print(f"  ✓ Validation: {'PASSED' if validation.valid else 'FAILED'}")
             if validation.errors:
                 for error in validation.errors:
                     print(f"    ✗ {error}")
@@ -247,7 +311,11 @@ class MultiStopOptimizer:
             placements=placements,
             unload_plans=unload_plans,
             stop_metrics=stop_metrics,
-            is_valid=validation.is_valid,
+            # PATCH 10: Derive validity - validator must be authoritative
+            is_valid=(
+                validation.valid and 
+                all(p.is_feasible for p in unload_plans.values())
+            ),
             validation_errors=validation.errors,
             validation_warnings=validation.warnings,
             solve_time_seconds=solve_time,
@@ -282,6 +350,38 @@ class MultiStopOptimizer:
             print(f"{'='*70}\n")
 
         return load_plan
+    
+    def _check_for_collisions(self, placements: List) -> List[str]:
+        """
+        Check all placements for collisions and return list of error messages.
+        
+        Args:
+            placements: List of PlacedBox objects
+            
+        Returns:
+            List of collision error messages (empty if no collisions)
+        """
+        from app.solver.utils import PlacedBox
+        
+        errors = []
+        tolerance = self.collision_tolerance_cm
+        
+        for i, box1 in enumerate(placements):
+            for j, box2 in enumerate(placements[i+1:], i+1):
+                # Check if boxes overlap in all 3 dimensions
+                x_overlap = not (box1.max_x <= box2.x + tolerance or box2.max_x <= box1.x + tolerance)
+                y_overlap = not (box1.max_y <= box2.y + tolerance or box2.max_y <= box1.y + tolerance)
+                z_overlap = not (box1.max_z <= box2.z + tolerance or box2.max_z <= box1.z + tolerance)
+                
+                if x_overlap and y_overlap and z_overlap:
+                    errors.append(
+                        f"COLLISION: Box {i+1} (SKU {box1.box.sku_id}) at "
+                        f"[{box1.x:.1f},{box1.y:.1f},{box1.z:.1f}] {box1.length:.0f}x{box1.width:.0f}x{box1.height:.0f} "
+                        f"overlaps with Box {j+1} (SKU {box2.box.sku_id}) at "
+                        f"[{box2.x:.1f},{box2.y:.1f},{box2.z:.1f}] {box2.length:.0f}x{box2.width:.0f}x{box2.height:.0f}"
+                    )
+        
+        return errors
 
     def optimize_with_alternatives(
         self,

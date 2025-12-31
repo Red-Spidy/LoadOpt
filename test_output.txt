@@ -1,0 +1,41 @@
+﻿
+[1m[96m================================================================================[0m
+[1m[96m                     LoadOpt TMS API Integration Test Suite                     [0m
+[1m[96m================================================================================[0m
+
+[94mTarget: http://localhost:8000[0m
+[94mAPI Prefix: /api/v1[0m
+
+
+[1mTest 1: Health Check Endpoint[0m
+python : Traceback (most recent call last):
+At line:1 char:1
++ python test_tms_api_integration.py 2>&1 | Out-File -Encoding utf8 tes ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "C:\Users\karan.dhillon\loadopt\test_tms_api_integration.py", line 89, in test_health_check
+    self.print_test("Health Check", True, 
+  File "C:\Users\karan.dhillon\loadopt\test_tms_api_integration.py", line 47, in print_test
+    print(f"{status} - {name}")
+  File "C:\Python310\lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2713' in position 5: character maps to 
+<undefined>
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\karan.dhillon\loadopt\test_tms_api_integration.py", line 577, in <module>
+    success = tester.run_all_tests()
+  File "C:\Users\karan.dhillon\loadopt\test_tms_api_integration.py", line 543, in run_all_tests
+    test()
+  File "C:\Users\karan.dhillon\loadopt\test_tms_api_integration.py", line 94, in test_health_check
+    self.print_test("Health Check", False, str(e))
+  File "C:\Users\karan.dhillon\loadopt\test_tms_api_integration.py", line 47, in print_test
+    print(f"{status} - {name}")
+  File "C:\Python310\lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2717' in position 5: character maps to 
+<undefined>
